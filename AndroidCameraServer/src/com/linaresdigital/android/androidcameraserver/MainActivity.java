@@ -15,7 +15,6 @@ import android.hardware.Camera.PreviewCallback;
 import android.hardware.Camera.Size;
 import android.os.Bundle;
 import android.os.Handler;
-import android.os.Build.VERSION;
 import android.os.PowerManager;
 import android.preference.PreferenceManager;
 import android.app.Activity;
@@ -26,28 +25,29 @@ import android.content.pm.ActivityInfo;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.View;
+import android.view.View.OnLayoutChangeListener;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.widget.RelativeLayout;
 import android.widget.Toast;
 
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements OnLayoutChangeListener {
 
   private static final String TAG = MainActivity.class.getClass().getName();
-  /**
-   * Instance of ImageProvider implementation to be published
-   */
+  /** Instance of ImageProvider implementation to be published */
   private CameraI cameraA;
-  /**
-   * Instance of camera to be used in activity
-   */
+  /** Instance of camera to be used in activity */
   static private Camera mCamera;
-  /**
-   * Instance of implementation of the camera preview that we'll use
-   */
+  /** Instance of implementation of the camera preview that we'll use */
   private CameraPreview mPreview;
+  /** Handler for autofocus when camera doesn't support it */
   private Handler autoFocusHandler;
-  private boolean previsualizando = false;
+  /** Previewing state */
+  private boolean previewing = false;
+  /** Frame layout what contents surface preview */
   private FrameLayout preview;
+  private SharedPreferences prefs;
 
   private String adapterendpoints = " -h 0.0.0.0 -p ";
   private String port = "9999";
@@ -58,11 +58,10 @@ public class MainActivity extends Activity {
   PowerManager.WakeLock wl;
 
   /**
-	 * 
-	 */
+   * Prepare and configure activity
+   */
   @Override
   protected void onCreate(Bundle savedInstanceState) {
-
     PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
     wl = pm.newWakeLock(PowerManager.SCREEN_DIM_WAKE_LOCK, "My Tag");
     super.onCreate(savedInstanceState);
@@ -71,44 +70,11 @@ public class MainActivity extends Activity {
     setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
     /* Provide continuous autofocus if camera does not support it */
     autoFocusHandler = new Handler();
-    SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
-    dimensions = prefs.getString("listpref", "320 240");
-    width = Integer.parseInt(dimensions.substring(0, dimensions.indexOf(" ")));
-    height =
-        Integer.parseInt(dimensions.substring(dimensions.indexOf(" ") + 1, dimensions.length()));
-
-    // Toast.makeText(getApplicationContext(), dimensions.substring(0,
-    // dimensions.indexOf(" ")), Toast.LENGTH_LONG).show();
-    // Toast.makeText(getApplicationContext(),
-    // dimensions.substring(dimensions.indexOf(" ")+1, dimensions.length()),
-    // Toast.LENGTH_LONG).show();
-
+    prefs = PreferenceManager.getDefaultSharedPreferences(this);
     // Get the value for port and protocol
     port = prefs.getString("Port Number", "9999");
     protocol = prefs.getString("protocol", "default");
 
-    // Check wakelock and lockscreen
-    if (prefs.getBoolean("lockscreen", false) == true) {
-      getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-    }
-    if (prefs.getBoolean("wakelock", false) == true) {
-      wl.acquire();
-    }
-
-    /* Initialize ICE, copied from an example */
-    /**************************************************************************/
-    if (VERSION.SDK_INT == 8) // android.os.Build.VERSION_CODES.FROYO (8)
-    {
-      //
-      // Workaround for a bug in Android 2.2 (Froyo).
-      //
-      // See http://code.google.com/p/android/issues/detail?id=9431
-      //
-      java.lang.System.setProperty("java.net.preferIPv4Stack", "true");
-      java.lang.System.setProperty("java.net.preferIPv6Addresses", "false");
-    }
-
-    /* Continuing the example copied */
     // SSL initialization can take some time. To avoid blocking the
     // calling thread, we perform the initialization in a separate thread.
     new Thread(new Runnable() {
@@ -116,7 +82,6 @@ public class MainActivity extends Activity {
         initializeCommunicator();
       }
     }).start();
-    /**************************************************************************/
   }
 
   /**
@@ -133,6 +98,9 @@ public class MainActivity extends Activity {
     return camara;
   }
 
+  /**
+   * Release all camera resources
+   */
   private void releaseCamera() {
     if (mCamera != null) {
       /* Disable callbacks */
@@ -142,21 +110,21 @@ public class MainActivity extends Activity {
       mCamera.release();
       mCamera = null;
       /* Save the state */
-      previsualizando = false;
+      previewing = false;
     }
   }
 
   private Runnable doAutoFocus = new Runnable() {
 
     public void run() {
-      if (previsualizando)
+      if (previewing)
         mCamera.autoFocus(autoFocusCB);
     }
   };
 
   PreviewCallback previewCb = new PreviewCallback() {
     public void onPreviewFrame(byte[] data, Camera camera) {
-      previsualizando = true;
+      previewing = true;
       try {
         if (CameraI.idDatos == null)
           return;
@@ -210,35 +178,46 @@ public class MainActivity extends Activity {
   @Override
   public boolean onOptionsItemSelected(MenuItem item) {
     switch (item.getItemId()) {
-
       case R.id.menu_settings:
         Intent i = new Intent(this, Preferences.class);
         startActivity(i);
         break;
-
     }
-
     return true;
   }
 
-  // protected void onActivityResult(int requestCode, int resultCode, Intent
-  // data) {
-  //
-  // if (requestCode == 1) {
-  // if(resultCode == RESULT_OK){
-  // String result=data.getStringExtra("result");
-  // adapterendpoints = "default -h 0.0.0.0 -p "+ result;
-  // new Thread(new Runnable() {
-  // public void run() {
-  // initializeCommunicator();
-  // }
-  // }).start();
-  // }
-  // if (resultCode == RESULT_CANCELED) {
-  // //Code if there's no result
-  // }
-  // }
-  // }//onActivityResult
+  /**
+   * When the layout is about to change (size is calculated previously) use the size of parent frame
+   * to calculate own size to keep preview surface's aspect ratio
+   */
+  @Override
+  public void onLayoutChange(View v, int left, int top, int right, int bottom, int oldLeft,
+      int oldTop, int oldRight, int oldBottom) {
+    /* Get parent layout (relative frame) to know total application size */
+    RelativeLayout rootLayout = (RelativeLayout) v.getParent();
+    /* Avoid calling this event listener again */
+    v.removeOnLayoutChangeListener(this);
+    /* Get preview frame parameters to change it to keep aspect ratio */
+    RelativeLayout.LayoutParams layoutPreviewParams =
+        (RelativeLayout.LayoutParams) preview.getLayoutParams();
+    /* Calculations needed to keep camera preview aspect ratio */
+    double rootAspectRatio = (double) rootLayout.getWidth() / (double) rootLayout.getHeight();
+    double previewAspectRatio = (double) width / (double) height;
+    if (rootAspectRatio > previewAspectRatio) {
+      /* The height will be the same as parent */
+      layoutPreviewParams.height = rootLayout.getHeight();
+      /* We need to calculate width to keep aspect ratio */
+      layoutPreviewParams.width = (int) ((double) rootLayout.getHeight() * previewAspectRatio);
+    } else {
+      /* The width will be the same as parent */
+      layoutPreviewParams.width = rootLayout.getWidth();
+      /* We need to calculate height to keep aspect ratio */
+      layoutPreviewParams.height = (int) ((double) rootLayout.getWidth() * previewAspectRatio);
+    }
+    /* Tell frame to center in parent relative frame */
+    layoutPreviewParams.addRule(RelativeLayout.CENTER_IN_PARENT);
+    preview.setLayoutParams(layoutPreviewParams);
+  }
 
   public void onStop() {
     super.onStop();
@@ -260,6 +239,16 @@ public class MainActivity extends Activity {
   @Override
   protected void onResume() {
     super.onResume();
+    /* Test if preferences was modified */
+    if (Preferences.modified) {
+      /* Clear modified flag */
+      Preferences.modified = false;
+      /* Finish this Activity and reload it again */
+      Toast.makeText(getApplicationContext(), R.string.application_reload, Toast.LENGTH_LONG).show();
+      this.finish();
+      Intent i = new Intent(this, MainActivity.class);
+      startActivity(i);
+    }
     /* Get an instance of the default camera */
     mCamera = getCameraInstance();
     if (mCamera == null) {
@@ -267,8 +256,6 @@ public class MainActivity extends Activity {
       this.finish();
     }
 
-    /* We call the Preferences and get the selected values */
-    SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
     dimensions = prefs.getString("listpref", "320 240");
     width = Integer.parseInt(dimensions.substring(0, dimensions.indexOf(" ")));
     height =
@@ -276,9 +263,13 @@ public class MainActivity extends Activity {
 
     /* We create an instance of CameraPreview to manage the camera */
     mPreview = new CameraPreview(this, mCamera, previewCb, autoFocusCB, width, height);
-    
+
     /* Find the frame that will contain the camera preview */
     preview = (FrameLayout) findViewById(R.id.frameLayout);
+
+    /* Change preview size when it have been displayed */
+    preview.addOnLayoutChangeListener(this);
+
     /* Add view to frame */
     preview.addView(mPreview);
 
@@ -295,11 +286,7 @@ public class MainActivity extends Activity {
     if (prefs.getBoolean("wakelock", false) == true) {
       wl.acquire();
     }
-    // Toast.makeText(getApplicationContext(),
-    // prefs.getBoolean("lockscreen", false) + "lockscreen",
-    // Toast.LENGTH_LONG).show();
-    // Toast.makeText(getApplicationContext(), prefs.getBoolean("wakelock",
-    // false) + "wakelock", Toast.LENGTH_LONG).show();
+
     // Initialize the Communicator again as ports and protocol have been
     // changed
     new Thread(new Runnable() {
@@ -328,19 +315,6 @@ public class MainActivity extends Activity {
       initData.properties = Ice.Util.createProperties();
       initData.properties.setProperty("Ice.Trace.Network", "3");
 
-      //
-      // Only configure IceSSL if we are using Froyo or later.
-      //
-      /*
-       * if(VERSION.SDK_INT >= 8) // android.os.Build.VERSION_CODES.FROYO (8) {
-       * initData.properties.setProperty("IceSSL.Trace.Security", "3");
-       * initData.properties.setProperty("IceSSL.KeystoreType", "BKS");
-       * initData.properties.setProperty("IceSSL.TruststoreType", "BKS");
-       * initData.properties.setProperty("IceSSL.Password", "password");
-       * initData.properties.setProperty("Ice.InitPlugins", "0");
-       * initData.properties.setProperty("Ice.Plugin.IceSSL", "IceSSL.PluginFactory"); }
-       */
-
       communicator = Ice.Util.initialize(initData);
       Ice.ObjectAdapter adapter =
           communicator.createObjectAdapterWithEndpoints("CameraAdapter", protocol
@@ -348,18 +322,6 @@ public class MainActivity extends Activity {
       cameraA = new CameraI();
       adapter.add((Ice.Object) cameraA, Ice.Util.stringToIdentity("cameraA"));
       adapter.activate();
-
-      Log.e(TAG, cameraA.ice_id());
-
-      /*
-       * if(VERSION.SDK_INT >= 8) // android.os.Build.VERSION_CODES.FROYO (8) { IceSSL.Plugin plugin
-       * = (IceSSL.Plugin)communicator.getPluginManager ().getPlugin("IceSSL"); // // Be sure to
-       * pass the same input stream to the SSL plug-in for // both the keystore and the truststore.
-       * This makes startup a // little faster since the plugin will not initialize // two
-       * keystores. // java.io.InputStream certs = getResources().openRawResource(R.raw.certs);
-       * plugin.setKeystoreStream(certs); plugin.setTruststoreStream(certs);
-       * communicator.getPluginManager().initializePlugins(); }
-       */
 
       synchronized (this) {
         _communicator = communicator;
